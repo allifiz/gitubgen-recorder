@@ -34,3 +34,22 @@ test('riwayat dapat difilter berdasarkan waktu', async () => {
   assert.equal(history[0].newStatus, 'In Progress');
   client.close();
 });
+
+test('batch besar tetap mencatat baseline dan perubahan dengan benar', async () => {
+  const client = createClient({ url: 'file::memory:' });
+  const items = Array.from({ length: 120 }, (_, index) => ({
+    ...item('Todo', `2026-10-14T01:${String(index % 60).padStart(2, '0')}:00Z`),
+    projectItemId: `PVTI_${index}`, issueUrl: `https://github.com/GO-Bimbel/api/issues/${index + 1}`,
+    number: index + 1
+  }));
+  const baseline = await recordStatuses(client, items);
+  const next = items.map((current, index) => index === 50
+    ? { ...current, status: 'In Progress', statusUpdatedAt: '2026-10-14T03:00:00Z' }
+    : current);
+  const changed = await recordStatuses(client, next);
+
+  assert.equal(baseline.seeded, 120);
+  assert.deepEqual({ changed: changed.changed, unchanged: changed.unchanged }, { changed: 1, unchanged: 119 });
+  assert.equal((await getHistory(client, [items[50].issueUrl])).length, 2);
+  client.close();
+});
