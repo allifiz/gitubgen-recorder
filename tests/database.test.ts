@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createClient } from '@libsql/client';
-import { getHistory, recordStatuses } from '../lib/database';
+import { getHistory, getRecorderState, recordStatuses, setRecorderState } from '../lib/database';
 
 const item = (status: string, updatedAt: string) => ({
   projectItemId: 'PVTI_1', issueUrl: 'https://github.com/GO-Bimbel/api/issues/3908',
@@ -51,5 +51,14 @@ test('batch besar tetap mencatat baseline dan perubahan dengan benar', async () 
   assert.equal(baseline.seeded, 120);
   assert.deepEqual({ changed: changed.changed, unchanged: changed.unchanged }, { changed: 1, unchanged: 119 });
   assert.equal((await getHistory(client, [items[50].issueUrl])).length, 2);
+  client.close();
+});
+
+test('cursor polling dapat disimpan dan direset', async () => {
+  const client = createClient({ url: 'file::memory:' });
+  await setRecorderState(client, 'cursor', 'abc');
+  assert.equal(await getRecorderState(client, 'cursor'), 'abc');
+  await setRecorderState(client, 'cursor', null);
+  assert.equal(await getRecorderState(client, 'cursor'), null);
   client.close();
 });
