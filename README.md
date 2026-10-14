@@ -5,12 +5,13 @@ Recorder mandiri untuk perubahan status GitHub Project V2. Service ini dibuat se
 ## Cara kerja
 
 1. Scheduler eksternal memanggil `GET /api/record-status` setiap menit.
-2. Recorder membaca maksimal lima halaman (500 item) Project V2, lalu menyimpan cursor untuk request berikutnya.
-3. Status dibandingkan dengan snapshot sebelumnya di Turso.
-4. Perubahan disimpan ke `status_history` menggunakan `Status.updatedAt` sebagai `occurred_at`.
-5. Gitubgen V2 mengambil transition melalui `POST /api/status-history`.
+2. Recorder melakukan fast poll berdasarkan `ProjectV2Item` ID untuk tiket yang berubah dalam 14 hari terakhir dan semua tiket yang masih `In Progress`.
+3. Secara paralel, recorder membaca maksimal lima halaman (500 item) Project V2 dan menyimpan cursor sebagai discovery/recovery sweep.
+4. Status dibandingkan dengan snapshot sebelumnya di Turso.
+5. Perubahan disimpan ke `status_history` menggunakan `Status.updatedAt` sebagai `occurred_at`.
+6. Gitubgen V2 mengambil transition melalui `POST /api/status-history`.
 
-Dengan 2.659 item dan cron setiap menit, satu putaran penuh membutuhkan sekitar enam menit tanpa melewati batas timeout 30 detik. Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
+Fast poll dijalankan setiap menit, sehingga tiket aktif yang sudah pernah ditemukan tidak perlu menunggu sweep penuh. Dengan 2.659 item, discovery sweep tetap membutuhkan sekitar enam run untuk menemukan tiket baru atau memulihkan perubahan di luar jendela aktif. Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
 
 ## Environment variables
 

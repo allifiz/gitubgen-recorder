@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fetchProjectStatusBatch, fetchProjectStatuses } from '../lib/github';
+import { fetchProjectStatusBatch, fetchProjectStatuses, fetchProjectStatusesByIds } from '../lib/github';
 
 test('mengambil status Project V2 dan timestamp field Status', async () => {
   const fakeFetch: typeof fetch = async () => new Response(JSON.stringify({
@@ -46,4 +46,22 @@ test('batch berhenti sesuai batas halaman dan mengembalikan cursor', async () =>
   assert.equal(calls, 5);
   assert.equal(batch.nextCursor, 'cursor-5');
   assert.equal(batch.completedSweep, false);
+});
+
+test('fast poll mengambil project item berdasarkan ID dalam batch 100', async () => {
+  let calls = 0;
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    calls += 1;
+    const body = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({ data: { nodes: body.variables.ids.map((id: string) => ({
+      id,
+      content: { number: 3908, title: 'Get Option Produk', url: `https://github.com/GO-Bimbel/api/issues/${id}`, repository: { nameWithOwner: 'GO-Bimbel/api' } },
+      fieldValueByName: { name: 'In Progress', updatedAt: '2026-10-14T02:15:00Z' }
+    })) } }), { status: 200 });
+  };
+  const rows = await fetchProjectStatusesByIds({
+    token: 'test', projectItemIds: Array.from({ length: 125 }, (_, index) => `PVTI_${index}`), fetchImpl: fakeFetch
+  });
+  assert.equal(calls, 2);
+  assert.equal(rows.length, 125);
 });

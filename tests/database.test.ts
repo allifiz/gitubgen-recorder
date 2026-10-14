@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createClient } from '@libsql/client';
-import { getHistory, getRecorderState, recordStatuses, setRecorderState } from '../lib/database';
+import { getActiveProjectItemIds, getHistory, getRecorderState, recordStatuses, setRecorderState } from '../lib/database';
 
 const item = (status: string, updatedAt: string) => ({
   projectItemId: 'PVTI_1', issueUrl: 'https://github.com/GO-Bimbel/api/issues/3908',
@@ -60,5 +60,17 @@ test('cursor polling dapat disimpan dan direset', async () => {
   assert.equal(await getRecorderState(client, 'cursor'), 'abc');
   await setRecorderState(client, 'cursor', null);
   assert.equal(await getRecorderState(client, 'cursor'), null);
+  client.close();
+});
+
+test('fast poll memilih status terbaru dan In Progress lama', async () => {
+  const client = createClient({ url: 'file::memory:' });
+  const oldTodo = { ...item('Todo', '2026-09-01T00:00:00Z'), projectItemId: 'PVTI_OLD_TODO', issueUrl: 'https://github.com/GO-Bimbel/api/issues/1' };
+  const oldProgress = { ...item('In Progress', '2026-09-01T00:00:00Z'), projectItemId: 'PVTI_OLD_PROGRESS', issueUrl: 'https://github.com/GO-Bimbel/api/issues/2' };
+  const recentDone = { ...item('Done', '2026-10-13T00:00:00Z'), projectItemId: 'PVTI_RECENT_DONE', issueUrl: 'https://github.com/GO-Bimbel/api/issues/3' };
+  await recordStatuses(client, [oldTodo, oldProgress, recentDone]);
+
+  const ids = await getActiveProjectItemIds(client, '2026-10-01T00:00:00Z');
+  assert.deepEqual(new Set(ids), new Set(['PVTI_OLD_PROGRESS', 'PVTI_RECENT_DONE']));
   client.close();
 });

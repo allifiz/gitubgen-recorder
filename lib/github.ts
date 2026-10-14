@@ -22,6 +22,22 @@ query ProjectStatuses($org: String!, $number: Int!, $after: String) {
   }
 }`;
 
+const NODES_QUERY = `
+query ProjectStatusNodes($ids: [ID!]!) {
+  nodes(ids: $ids) {
+    ... on ProjectV2Item {
+      id
+      content {
+        ... on Issue { number title url repository { nameWithOwner } }
+        ... on PullRequest { number title url repository { nameWithOwner } }
+      }
+      fieldValueByName(name: "Status") {
+        ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+      }
+    }
+  }
+}`;
+
 type FetchLike = typeof fetch;
 
 type ProjectStatusBatch = {
@@ -30,6 +46,38 @@ type ProjectStatusBatch = {
   completedSweep: boolean;
   pages: number;
 };
+
+function parseProjectItem(node: any): ProjectItemStatus | null {
+  const content = node?.content;
+  const status = node?.fieldValueByName;
+  if (!node?.id || !content?.url || !status?.name || !status?.updatedAt) return null;
+  return {
+    projectItemId: node.id,
+    issueUrl: content.url,
+    title: content.title || '',
+    repository: content.repository?.nameWithOwner || '',
+    number: Number(content.number || 0),
+    status: status.name,
+    statusUpdatedAt: status.updatedAt
+  };
+}
+
+async function githubGraphql(fetchImpl: FetchLike, token: string, query: string, variables: object) {
+  const response = await fetchImpl(ENDPOINT, {
+    method: 'POST',
+    headers: {
+      accept: 'application/vnd.github+json',
+      authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+      'user-agent': 'gitubgen-recorder/0.1'
+    },
+    body: JSON.stringify({ query, variables })
+  });
+  const payload = await response.json() as any;
+  if (!response.ok) throw new Error(`GitHub GraphQL gagal (${response.status}).`);
+  if (payload.errors?.length) throw new Error(payload.errors.map((error: any) => error.message).join('; '));
+  return payload.data;
+}
 
 export async function fetchProjectStatusBatch(input: {
   token: string;
@@ -47,39 +95,15 @@ export async function fetchProjectStatusBatch(input: {
   let hasNextPage = false;
 
   do {
-    const response = await fetchImpl(ENDPOINT, {
-      method: 'POST',
-      headers: {
-        accept: 'application/vnd.github+json',
-        authorization: `Bearer ${input.token}`,
-        'content-type': 'application/json',
-        'user-agent': 'gitubgen-recorder/0.1'
-      },
-      body: JSON.stringify({
-        query: QUERY,
-        variables: { org: input.org, number: input.projectNumber, after }
-      })
+    const data = await githubGraphql(fetchImpl, input.token, QUERY, {
+      org: input.org, number: input.projectNumber, after
     });
-    const payload = await response.json() as any;
-    if (!response.ok) throw new Error(`GitHub GraphQL gagal (${response.status}).`);
-    if (payload.errors?.length) throw new Error(payload.errors.map((e: any) => e.message).join('; '));
-
-    const project = payload.data?.organization?.projectV2;
+    const project = data?.organization?.projectV2;
     if (!project) throw new Error('Project GitHub tidak ditemukan atau token tidak memiliki akses.');
     const connection = project.items;
     for (const node of connection.nodes || []) {
-      const content = node?.content;
-      const status = node?.fieldValueByName;
-      if (!content?.url || !status?.name || !status?.updatedAt) continue;
-      collected.push({
-        projectItemId: node.id,
-        issueUrl: content.url,
-        title: content.title || '',
-        repository: content.repository?.nameWithOwner || '',
-        number: Number(content.number || 0),
-        status: status.name,
-        statusUpdatedAt: status.updatedAt
-      });
+      const item = parseProjectItem(node);
+      if (item) collected.push(item);
     }
     pages += 1;
     hasNextPage = Boolean(connection.pageInfo?.hasNextPage);
@@ -87,6 +111,24 @@ export async function fetchProjectStatusBatch(input: {
   } while (hasNextPage && pages < maxPages);
 
   return { items: collected, nextCursor: after, completedSweep: !hasNextPage, pages };
+}
+
+export async function fetchProjectStatusesByIds(input: {
+  token: string;
+  projectItemIds: string[];
+  fetchImpl?: FetchLike;
+}): Promise<ProjectItemStatus[]> {
+  const fetchImpl = input.fetchImpl || fetch;
+  const uniqueIds = [...new Set(input.projectItemIds.filter(Boolean))];
+  const chunks: string[][] = [];
+  for (let index = 0; index < uniqueIds.length; index += 100) {
+    chunks.push(uniqueIds.slice(index, index + 100));
+  }
+  const results = await Promise.all(chunks.map(async ids => {
+    const data = await githubGraphql(fetchImpl, input.token, NODES_QUERY, { ids });
+    return (data?.nodes || []).map(parseProjectItem).filter(Boolean) as ProjectItemStatus[];
+  }));
+  return results.flat();
 }
 
 export async function fetchProjectStatuses(input: {

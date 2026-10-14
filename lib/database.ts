@@ -64,6 +64,23 @@ export async function setRecorderState(client: Client, key: string, value: strin
   });
 }
 
+export async function getActiveProjectItemIds(
+  client: Client,
+  recentSince: string,
+  limit = 500
+) {
+  await ensureSchema(client);
+  const result = await client.execute({
+    sql: `SELECT project_item_id
+      FROM status_snapshot
+      WHERE status_updated_at >= ? OR current_status = 'In Progress'
+      ORDER BY status_updated_at DESC
+      LIMIT ?`,
+    args: [recentSince, limit]
+  });
+  return result.rows.map(row => String(row.project_item_id));
+}
+
 export async function recordStatuses(client: Client, items: ProjectItemStatus[], now = new Date().toISOString()) {
   await ensureSchema(client);
   let seeded = 0;
