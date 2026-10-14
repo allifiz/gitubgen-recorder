@@ -35,9 +35,33 @@ export async function ensureSchema(client: Client) {
       source TEXT NOT NULL CHECK (source IN ('baseline', 'poll')),
       UNIQUE(issue_url, new_status, occurred_at)
     )`,
+    `CREATE TABLE IF NOT EXISTS recorder_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )`,
     'CREATE INDEX IF NOT EXISTS idx_history_issue_occurred ON status_history(issue_url, occurred_at)',
     'CREATE INDEX IF NOT EXISTS idx_history_occurred ON status_history(occurred_at)'
   ], 'write');
+}
+
+export async function getRecorderState(client: Client, key: string) {
+  await ensureSchema(client);
+  const result = await client.execute({ sql: 'SELECT value FROM recorder_state WHERE key = ?', args: [key] });
+  return result.rows[0]?.value == null ? null : String(result.rows[0].value);
+}
+
+export async function setRecorderState(client: Client, key: string, value: string | null, now = new Date().toISOString()) {
+  await ensureSchema(client);
+  if (value == null) {
+    await client.execute({ sql: 'DELETE FROM recorder_state WHERE key = ?', args: [key] });
+    return;
+  }
+  await client.execute({
+    sql: `INSERT INTO recorder_state (key, value, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at`,
+    args: [key, value, now]
+  });
 }
 
 export async function recordStatuses(client: Client, items: ProjectItemStatus[], now = new Date().toISOString()) {
