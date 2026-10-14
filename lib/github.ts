@@ -24,15 +24,27 @@ query ProjectStatuses($org: String!, $number: Int!, $after: String) {
 
 type FetchLike = typeof fetch;
 
-export async function fetchProjectStatuses(input: {
+type ProjectStatusBatch = {
+  items: ProjectItemStatus[];
+  nextCursor: string | null;
+  completedSweep: boolean;
+  pages: number;
+};
+
+export async function fetchProjectStatusBatch(input: {
   token: string;
   org: string;
   projectNumber: number;
+  after?: string | null;
+  maxPages?: number;
   fetchImpl?: FetchLike;
-}): Promise<ProjectItemStatus[]> {
+}): Promise<ProjectStatusBatch> {
   const fetchImpl = input.fetchImpl || fetch;
   const collected: ProjectItemStatus[] = [];
-  let after: string | null = null;
+  const maxPages = Math.max(1, Math.min(input.maxPages || 5, 10));
+  let after: string | null = input.after || null;
+  let pages = 0;
+  let hasNextPage = false;
 
   do {
     const response = await fetchImpl(ENDPOINT, {
@@ -69,7 +81,27 @@ export async function fetchProjectStatuses(input: {
         statusUpdatedAt: status.updatedAt
       });
     }
-    after = connection.pageInfo?.hasNextPage ? connection.pageInfo.endCursor : null;
+    pages += 1;
+    hasNextPage = Boolean(connection.pageInfo?.hasNextPage);
+    after = hasNextPage ? connection.pageInfo.endCursor : null;
+  } while (hasNextPage && pages < maxPages);
+
+  return { items: collected, nextCursor: after, completedSweep: !hasNextPage, pages };
+}
+
+export async function fetchProjectStatuses(input: {
+  token: string;
+  org: string;
+  projectNumber: number;
+  fetchImpl?: FetchLike;
+}): Promise<ProjectItemStatus[]> {
+  const collected: ProjectItemStatus[] = [];
+  let after: string | null = null;
+
+  do {
+    const batch = await fetchProjectStatusBatch({ ...input, after, maxPages: 10 });
+    collected.push(...batch.items);
+    after = batch.nextCursor;
   } while (after);
 
   return collected;
