@@ -5,12 +5,12 @@ Recorder mandiri untuk perubahan status GitHub Project V2. Service ini dibuat se
 ## Cara kerja
 
 1. Scheduler eksternal memanggil `GET /api/record-status` setiap menit.
-2. Recorder membaca nilai Status terkini seluruh item Project V2 melalui GraphQL.
+2. Recorder membaca maksimal lima halaman (500 item) Project V2, lalu menyimpan cursor untuk request berikutnya.
 3. Status dibandingkan dengan snapshot sebelumnya di Turso.
 4. Perubahan disimpan ke `status_history` menggunakan `Status.updatedAt` sebagai `occurred_at`.
 5. Gitubgen V2 mengambil transition melalui `POST /api/status-history`.
 
-Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
+Dengan 2.659 item dan cron setiap menit, satu putaran penuh membutuhkan sekitar enam menit tanpa melewati batas timeout 30 detik. Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
 
 ## Environment variables
 
@@ -73,4 +73,4 @@ Database schema dibuat secara idempotent ketika endpoint pertama dijalankan.
 - Turso Free untuk database.
 - cron-job.org untuk request per menit pada jam kerja.
 
-Atur cron-job.org agar mengirim header `Authorization: Bearer <CRON_SECRET>` ke `/api/record-status`.
+Atur cron-job.org setiap satu menit dengan timeout 30 detik dan header `Authorization: Bearer <CRON_SECRET>` ke `/api/record-status`.
