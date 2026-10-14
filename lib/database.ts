@@ -46,15 +46,20 @@ export async function recordStatuses(client: Client, items: ProjectItemStatus[],
   let changed = 0;
   let unchanged = 0;
 
+  const snapshots = await client.execute(
+    'SELECT issue_url, current_status, status_updated_at FROM status_snapshot'
+  );
+  const existingByUrl = new Map(snapshots.rows.map(row => [String(row.issue_url), {
+    currentStatus: String(row.current_status),
+    statusUpdatedAt: String(row.status_updated_at)
+  }]));
+  const writes: Array<{ sql: string; args: Array<string | number | null> }> = [];
+
   for (const item of items) {
-    const existing = await client.execute({
-      sql: 'SELECT current_status, status_updated_at FROM status_snapshot WHERE issue_url = ?',
-      args: [item.issueUrl]
-    });
-    const row = existing.rows[0];
-    const previousStatus = row ? String(row.current_status) : null;
-    const isNew = !row;
-    const isChanged = Boolean(row && (previousStatus !== item.status || String(row.status_updated_at) !== item.statusUpdatedAt));
+    const snapshot = existingByUrl.get(item.issueUrl);
+    const previousStatus = snapshot?.currentStatus ?? null;
+    const isNew = !snapshot;
+    const isChanged = Boolean(snapshot && (previousStatus !== item.status || snapshot.statusUpdatedAt !== item.statusUpdatedAt));
 
     if (isNew || isChanged) {
       const transition: StatusTransition = {
@@ -69,32 +74,32 @@ export async function recordStatuses(client: Client, items: ProjectItemStatus[],
         detectedAt: now,
         source: isNew ? 'baseline' : 'poll'
       };
-      await client.batch([
-        {
-          sql: `INSERT OR IGNORE INTO status_history
-            (issue_url, project_item_id, title, repository, issue_number, previous_status, new_status, occurred_at, detected_at, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          args: [transition.issueUrl, transition.projectItemId, transition.title, transition.repository,
-            transition.number, transition.previousStatus, transition.newStatus, transition.occurredAt,
-            transition.detectedAt, transition.source]
-        },
-        {
-          sql: `INSERT INTO status_snapshot
-            (issue_url, project_item_id, title, repository, issue_number, current_status, status_updated_at, checked_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(issue_url) DO UPDATE SET
-              project_item_id=excluded.project_item_id, title=excluded.title, repository=excluded.repository,
-              issue_number=excluded.issue_number, current_status=excluded.current_status,
-              status_updated_at=excluded.status_updated_at, checked_at=excluded.checked_at`,
-          args: [item.issueUrl, item.projectItemId, item.title, item.repository, item.number,
-            item.status, item.statusUpdatedAt, now]
-        }
-      ], 'write');
+      writes.push({
+        sql: `INSERT OR IGNORE INTO status_history
+          (issue_url, project_item_id, title, repository, issue_number, previous_status, new_status, occurred_at, detected_at, source)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        args: [transition.issueUrl, transition.projectItemId, transition.title, transition.repository,
+          transition.number, transition.previousStatus, transition.newStatus, transition.occurredAt,
+          transition.detectedAt, transition.source]
+      }, {
+        sql: `INSERT INTO status_snapshot
+          (issue_url, project_item_id, title, repository, issue_number, current_status, status_updated_at, checked_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(issue_url) DO UPDATE SET
+            project_item_id=excluded.project_item_id, title=excluded.title, repository=excluded.repository,
+            issue_number=excluded.issue_number, current_status=excluded.current_status,
+            status_updated_at=excluded.status_updated_at, checked_at=excluded.checked_at`,
+        args: [item.issueUrl, item.projectItemId, item.title, item.repository, item.number,
+          item.status, item.statusUpdatedAt, now]
+      });
       if (isNew) seeded += 1; else changed += 1;
     } else {
-      await client.execute({ sql: 'UPDATE status_snapshot SET checked_at = ? WHERE issue_url = ?', args: [now, item.issueUrl] });
       unchanged += 1;
     }
+  }
+
+  for (let index = 0; index < writes.length; index += 100) {
+    await client.batch(writes.slice(index, index + 100), 'write');
   }
   return { scanned: items.length, seeded, changed, unchanged, recordedAt: now };
 }
