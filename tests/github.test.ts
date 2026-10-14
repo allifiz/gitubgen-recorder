@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fetchProjectStatuses } from '../lib/github';
+import { fetchProjectStatusBatch, fetchProjectStatuses } from '../lib/github';
 
 test('mengambil status Project V2 dan timestamp field Status', async () => {
   const fakeFetch: typeof fetch = async () => new Response(JSON.stringify({
@@ -30,4 +30,20 @@ test('mengikuti pagination Project V2', async () => {
   };
   await fetchProjectStatuses({ token: 'test', org: 'GO-Bimbel', projectNumber: 11, fetchImpl: fakeFetch });
   assert.equal(calls, 2);
+});
+
+test('batch berhenti sesuai batas halaman dan mengembalikan cursor', async () => {
+  let calls = 0;
+  const fakeFetch: typeof fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ data: { organization: { projectV2: { items: {
+      pageInfo: { hasNextPage: true, endCursor: `cursor-${calls}` }, nodes: []
+    } } } } }), { status: 200 });
+  };
+  const batch = await fetchProjectStatusBatch({
+    token: 'test', org: 'GO-Bimbel', projectNumber: 11, maxPages: 5, fetchImpl: fakeFetch
+  });
+  assert.equal(calls, 5);
+  assert.equal(batch.nextCursor, 'cursor-5');
+  assert.equal(batch.completedSweep, false);
 });
