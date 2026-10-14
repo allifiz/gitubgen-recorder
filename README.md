@@ -13,6 +13,8 @@ Recorder mandiri untuk perubahan status GitHub Project V2. Service ini dibuat se
 
 Fast poll dijalankan setiap menit, sehingga tiket aktif yang sudah pernah ditemukan tidak perlu menunggu sweep penuh. Dengan 2.659 item, discovery sweep tetap membutuhkan sekitar enam run untuk menemukan tiket baru atau memulihkan perubahan di luar jendela aktif. Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
 
+Query fast poll memakai index status dan perbandingan hanya membaca snapshot tiket yang sedang diproses. Poll tanpa perubahan tidak menambah row history baru.
+
 ## Environment variables
 
 Salin `.env.example` menjadi `.env.local`.

@@ -74,3 +74,51 @@ test('fast poll memilih status terbaru dan In Progress lama', async () => {
   assert.deepEqual(new Set(ids), new Set(['PVTI_OLD_PROGRESS', 'PVTI_RECENT_DONE']));
   client.close();
 });
+
+test('schema memiliki index untuk query fast poll', async () => {
+  const client = createClient({ url: 'file::memory:' });
+  await recordStatuses(client, [item('Todo', '2026-10-14T01:00:00Z')]);
+  const indexes = await client.execute('PRAGMA index_list(status_snapshot)');
+  const names = new Set(indexes.rows.map(row => String(row.name)));
+  const plan = await client.execute({
+    sql: `EXPLAIN QUERY PLAN
+      SELECT project_item_id
+      FROM (
+        SELECT project_item_id, status_updated_at FROM status_snapshot WHERE status_updated_at >= ?
+        UNION
+        SELECT project_item_id, status_updated_at FROM status_snapshot WHERE current_status = 'In Progress'
+      )
+      ORDER BY status_updated_at DESC
+      LIMIT ?`,
+    args: ['2026-10-01T00:00:00Z', 500]
+  });
+  const details = plan.rows.map(row => String(row.detail)).join('\n');
+
+  assert.equal(names.has('idx_snapshot_status_updated'), true);
+  assert.equal(names.has('idx_snapshot_current_status_updated'), true);
+  assert.match(details, /idx_snapshot_status_updated/);
+  assert.match(details, /idx_snapshot_current_status_updated/);
+  client.close();
+});
+
+test('perbandingan snapshot tetap benar saat input kosong dan lebih dari satu batch', async () => {
+  const client = createClient({ url: 'file::memory:' });
+  const empty = await recordStatuses(client, []);
+  const items = Array.from({ length: 450 }, (_, index) => ({
+    ...item('Todo', '2026-10-14T01:00:00Z'),
+    projectItemId: `PVTI_BATCH_${index}`,
+    issueUrl: `https://github.com/GO-Bimbel/api/issues/${index + 1}`,
+    number: index + 1
+  }));
+  await recordStatuses(client, items);
+  const changed = await recordStatuses(client, [{
+    ...items[449], status: 'In Progress', statusUpdatedAt: '2026-10-14T02:00:00Z'
+  }]);
+
+  assert.deepEqual(empty, {
+    scanned: 0, seeded: 0, changed: 0, unchanged: 0,
+    recordedAt: empty.recordedAt
+  });
+  assert.deepEqual({ changed: changed.changed, seeded: changed.seeded }, { changed: 1, seeded: 0 });
+  client.close();
+});

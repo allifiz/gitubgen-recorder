@@ -40,6 +40,8 @@ export async function ensureSchema(client: Client) {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     )`,
+    'CREATE INDEX IF NOT EXISTS idx_snapshot_status_updated ON status_snapshot(status_updated_at)',
+    'CREATE INDEX IF NOT EXISTS idx_snapshot_current_status_updated ON status_snapshot(current_status, status_updated_at)',
     'CREATE INDEX IF NOT EXISTS idx_history_issue_occurred ON status_history(issue_url, occurred_at)',
     'CREATE INDEX IF NOT EXISTS idx_history_occurred ON status_history(occurred_at)'
   ], 'write');
@@ -72,8 +74,15 @@ export async function getActiveProjectItemIds(
   await ensureSchema(client);
   const result = await client.execute({
     sql: `SELECT project_item_id
-      FROM status_snapshot
-      WHERE status_updated_at >= ? OR current_status = 'In Progress'
+      FROM (
+        SELECT project_item_id, status_updated_at
+        FROM status_snapshot
+        WHERE status_updated_at >= ?
+        UNION
+        SELECT project_item_id, status_updated_at
+        FROM status_snapshot
+        WHERE current_status = 'In Progress'
+      )
       ORDER BY status_updated_at DESC
       LIMIT ?`,
     args: [recentSince, limit]
@@ -87,13 +96,24 @@ export async function recordStatuses(client: Client, items: ProjectItemStatus[],
   let changed = 0;
   let unchanged = 0;
 
-  const snapshots = await client.execute(
-    'SELECT issue_url, current_status, status_updated_at FROM status_snapshot'
-  );
-  const existingByUrl = new Map(snapshots.rows.map(row => [String(row.issue_url), {
-    currentStatus: String(row.current_status),
-    statusUpdatedAt: String(row.status_updated_at)
-  }]));
+  const existingByUrl = new Map<string, { currentStatus: string; statusUpdatedAt: string }>();
+  const issueUrls = [...new Set(items.map(item => item.issueUrl).filter(Boolean))];
+  for (let index = 0; index < issueUrls.length; index += 400) {
+    const chunk = issueUrls.slice(index, index + 400);
+    const placeholders = chunk.map(() => '?').join(',');
+    const snapshots = await client.execute({
+      sql: `SELECT issue_url, current_status, status_updated_at
+        FROM status_snapshot
+        WHERE issue_url IN (${placeholders})`,
+      args: chunk
+    });
+    for (const row of snapshots.rows) {
+      existingByUrl.set(String(row.issue_url), {
+        currentStatus: String(row.current_status),
+        statusUpdatedAt: String(row.status_updated_at)
+      });
+    }
+  }
   const writes: Array<{ sql: string; args: Array<string | number | null> }> = [];
 
   for (const item of items) {
