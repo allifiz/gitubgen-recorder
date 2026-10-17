@@ -1,79 +1,63 @@
-# Gitubgen Recorder
+# GitubGen Recorder
 
-Recorder mandiri untuk perubahan status GitHub Project V2. Service ini dibuat sebagai mitigasi ketika `ProjectV2ItemStatusChangedEvent` tidak ditulis ke timeline issue oleh GitHub.
+Next.js di Vercel + Turso/libSQL untuk mengamati status GitHub Project V2. Cron eksternal tetap **setiap satu menit, sepanjang hari**. Tidak ada perubahan jadwal 09–17, webhook, debounce dua polling, atau backfill transisi singkat.
 
-## Cara kerja
+## Konfigurasi
 
-1. Scheduler eksternal memanggil `GET /api/record-status` setiap menit.
-2. Recorder melakukan fast poll berdasarkan `ProjectV2Item` ID untuk tiket yang berubah dalam 14 hari terakhir dan semua tiket yang masih `In Progress`.
-3. Secara paralel, recorder membaca maksimal lima halaman (500 item) Project V2 dan menyimpan cursor sebagai discovery/recovery sweep.
-4. Status dibandingkan dengan snapshot sebelumnya di Turso.
-5. Perubahan disimpan ke `status_history` menggunakan `Status.updatedAt` sebagai `occurred_at`.
-6. Gitubgen V2 mengambil transition melalui `POST /api/status-history`.
+Environment server:
 
-Fast poll dijalankan setiap menit, sehingga tiket aktif yang sudah pernah ditemukan tidak perlu menunggu sweep penuh. Dengan 2.659 item, discovery sweep tetap membutuhkan sekitar enam run untuk menemukan tiket baru atau memulihkan perubahan di luar jendela aktif. Run pertama membuat event `baseline` agar status dan waktu status terkini tetap tersedia. Baseline tidak mengarang status sebelumnya.
+- `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`
+- `GITHUB_TOKEN` dengan akses baca project/repository yang diperlukan
+- `GITHUB_ORG` (default GO-Bimbel), `GITHUB_PROJECT_NUMBER` (default 11)
+- `CRON_SECRET` untuk poll; `RECORDER_API_SECRET` untuk history
 
-Query fast poll memakai index status dan perbandingan hanya membaca snapshot tiket yang sedang diproses. Poll tanpa perubahan tidak menambah row history baru.
+Panggil `GET /api/record-status` dengan `Authorization: Bearer <CRON_SECRET>` dari cron-job.org setiap menit. Jangan menaruh secret pada URL. Timeout fungsi 30 detik. Fast poll mengambil maksimal 500 item aktif/recent dengan rotasi berdasarkan waktu pemeriksaan; full sweep dipaginasi dengan cursor, maksimal lima halaman per invocation.
 
-## Environment variables
+## Integritas data
 
-Salin `.env.example` menjadi `.env.local`.
+Identitas snapshot adalah project item ID yang stabil (unik global GitHub), dengan project number, issue node ID, canonical URL, dan URL alias. Tiket pindah repository mempertahankan history melalui alias. Active/sweep dipilih berdasarkan timestamp terbaru. Transaction write dan snapshot monotonic mencegah data lama menimpa data baru. Lease mencegah dua poll baru berjalan bersamaan; lease kedaluwarsa jika fungsi terhenti.
 
-| Variable | Kegunaan |
-|---|---|
-| `GITHUB_TOKEN` | Fine-grained/classic token yang dapat membaca organisasi dan Project 11 |
-| `GITHUB_ORG` | Default `GO-Bimbel` |
-| `GITHUB_PROJECT_NUMBER` | Default `11` |
-| `TURSO_DATABASE_URL` | URL database Turso |
-| `TURSO_AUTH_TOKEN` | Token database Turso |
-| `CRON_SECRET` | Bearer secret khusus endpoint polling |
-| `RECORDER_API_SECRET` | Bearer secret khusus endpoint history |
+Status berbeda saat polling menjadi transition. Status sama dengan timestamp field yang berubah menjadi **observation** dengan gap, bukan transisi status→status yang sama. Perubahan beberapa detik yang tidak tertangkap polling tidak direkonstruksi ke database. Perubahan yang kebetulan tepat tertangkap polling tetap bisa tercatat. `No status` memakai timestamp item bila field Status sudah tidak ada; bukti ini ditandai gap/ketidakpastian waktu.
 
-Token dan secret tidak boleh memakai prefix `NEXT_PUBLIC_`.
+`last_polled_at` terpisah dari `last_status_change_at`. Percobaan terhadap item hilang juga dirotasi agar tidak menghalangi active set lain. Heartbeat poll, sweep completion, missing active count, error, durasi, stale input, observation, seeded, dan changed tersedia melalui health/logs. Timeout GitHub delapan detik per request, retry maksimal satu kali untuk HTTP 5xx; izin/rate limit errors tidak diulang tanpa batas.
+
+## Migrasi aditif v2
+
+Writer pertama setelah deployment menjalankan migrasi satu kali per database:
+
+1. Validasi timestamp legacy. Kegagalan preflight menghentikan migrasi tanpa mengubah bukti legacy.
+2. Tabel lama `status_snapshot` dan `status_history` **tetap dipertahankan** sebagai backup sebelum migrasi; writer baru tidak memodifikasinya.
+3. Buat `current_items`, `issue_aliases`, `status_events`, dan `poll_leases`.
+4. Kelompokkan snapshot hanya berdasarkan project item ID; pilih timestamp terbaru, lalu checked_at, lalu URL untuk tie-break deterministik. Semua URL lama menjadi alias.
+5. Salin history dengan legacy ID; event status sama→sama diberi kind observation. Tidak mengarang event perantara. Bukti duplikat legacy yang mewakili identitas/transisi sama didedup pada model baru; bukti mentah lengkap tetap di tabel lama.
+6. Commit schema version secara atomik bersama model baru.
+
+Read endpoint tidak menjalankan DDL/migrasi. Bila belum siap, mengembalikan 503. Rollback deployment tidak menghapus tabel v2; ekspor/simpan bukti v2 sebelum memakai writer lama karena writer lama hanya memahami tabel legacy. Jangan menghapus tabel lama atau v2 untuk melakukan rollback.
 
 ## API
 
-### Health
+`GET /api/health?check=live`: liveness saja. `GET /api/health`: DB readiness dan heartbeat; 503 bila belum siap atau poll terakhir lebih dari tiga menit. Tidak menampilkan secret/detail error internal.
 
-```http
-GET /api/health
-```
+`POST /api/status-history`, header `Authorization: Bearer <RECORDER_API_SECRET>`:
 
-### Record status
-
-```http
-GET /api/record-status
-Authorization: Bearer <CRON_SECRET>
-```
-
-### Read history
-
-```http
-POST /api/status-history
-Authorization: Bearer <RECORDER_API_SECRET>
-Content-Type: application/json
-
+```json
 {
-  "issueUrls": ["https://github.com/GO-Bimbel/go-superapp-api/issues/3908"],
+  "issueUrls": ["https://github.com/OWNER/REPO/issues/123"],
   "from": "2026-10-14T00:00:00+07:00",
-  "to": "2026-10-14T23:59:59+07:00"
+  "to": "2026-10-17T00:00:00+07:00",
+  "includeContext": true
 }
 ```
 
+Maksimal 250 URL per request; input oversize/invalid ditolak dengan 400, tidak dipotong diam-diam. Timestamp ISO harus memiliki timezone dan dinormalisasi UTC; rentang `[from,to)` (akhir eksklusif). `history` berisi baseline/transition, `context` state sebelum rentang, dan `observations` bukti gap terpisah. Setiap event membawa `requestedUrls`, canonical dan original URL, project/item/node ID, waktu occurrence/detection, serta provenance. `coverage` berisi requested/processed/missing/truncated, range, readiness, freshness, heartbeat, dan kebijakan polling. Missing berarti tidak ada bukti dalam range/context, bukan bukti issue tidak ada.
+
 ## Development
 
-```bash
-npm install
+Node.js 22+:
+
+```sh
+npm ci
 npm run check
-npm run dev
 ```
 
-Database schema dibuat secara idempotent ketika endpoint pertama dijalankan.
-
-## Deployment gratis
-
-- Vercel Hobby untuk web/API.
-- Turso Free untuk database.
-- cron-job.org untuk request per menit pada jam kerja.
-
-Atur cron-job.org setiap satu menit dengan timeout 30 detik dan header `Authorization: Bearer <CRON_SECRET>` ke `/api/record-status`.
+Tes SQLite menggunakan file temporer terisolasi (transaksi memerlukan koneksi database bersama, bukan `file::memory:` per koneksi). Cakupan termasuk baseline/poll/observation, alias transfer, migrasi, stale snapshot, multi-project, lease, rotasi >500 item, UTC/WIB, context, kontrak API, freshness, dan GitHub pagination.

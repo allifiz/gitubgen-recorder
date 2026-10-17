@@ -1,5 +1,9 @@
 export type ProjectItemStatus = {
   projectItemId: string;
+  issueNodeId?: string;
+  projectNumber?: number;
+  observedAt?: string;
+  statusTimeSource?: string;
   issueUrl: string;
   title: string;
   repository: string;
@@ -11,6 +15,10 @@ export type ProjectItemStatus = {
 export type StatusTransition = {
   issueUrl: string;
   projectItemId: string;
+  issueNodeId?: string;
+  projectNumber?: number;
+  observedAt?: string;
+  statusTimeSource?: string;
   title: string;
   repository: string;
   number: number;
@@ -18,5 +26,5 @@ export type StatusTransition = {
   newStatus: string;
   occurredAt: string;
   detectedAt: string;
-  source: 'baseline' | 'poll';
+  source: "baseline" | "poll";
 };
